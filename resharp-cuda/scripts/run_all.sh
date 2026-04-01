@@ -134,8 +134,8 @@ done
 
 if [ -n "$PYTHON" ]; then
     OUTPUT=$($PYTHON resharp-cuda/scripts/z3_equivalence_proof.py 2>&1)
-    PROVED=$(echo "$OUTPUT" | grep -c '✓' || true)
-    FAILED_PROOFS=$(echo "$OUTPUT" | grep -c '✗' || true)
+    PROVED=$(echo "$OUTPUT" | grep -cE '✅|✓' || true)
+    FAILED_PROOFS=$(echo "$OUTPUT" | grep -cE '❌|✗' || true)
     if [ "$FAILED_PROOFS" -eq 0 ] && [ "$PROVED" -gt 0 ]; then
         ok "Z3 proofs: ${PROVED} categories proved"
     else

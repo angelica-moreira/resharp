@@ -609,12 +609,44 @@ The trade-off is ~760 lines of unsafe FFI code, but this is well-isolated in `cu
 
 ## Appendix A: Reproducing Results
 
+All scripts are in `resharp-cuda/scripts/`. Each is self-contained and can be run independently.
+
+### Run Everything (build → test → validate → benchmark)
+
+```bash
+./resharp-cuda/scripts/run_all.sh
+```
+
+### Individual Scripts
+
+| Script | What It Does | Time |
+|--------|-------------|------|
+| `run_benchmarks.sh` | Oracle vs CPU-ref vs GPU throughput comparison, generates CSV + charts | ~3 min |
+| `run_cross_validation.sh` | 82 tests: 3-way correctness check (oracle = cpu_ref = gpu) | ~30 sec |
+| `run_cuda_sanitizers.sh` | memcheck + racecheck + initcheck via compute-sanitizer | ~2 min |
+| `run_z3_proofs.sh` | Z3 formal equivalence proofs (4 categories) | ~10 sec |
+
+```bash
+# Benchmark only (produces profile_results.csv + terminal charts)
+./resharp-cuda/scripts/run_benchmarks.sh
+
+# Cross-validation only (44 conversion + 38 GPU tests)
+./resharp-cuda/scripts/run_cross_validation.sh
+
+# CUDA sanitizer checks only (requires compute-sanitizer)
+./resharp-cuda/scripts/run_cuda_sanitizers.sh
+
+# Z3 formal proofs only (requires python3 + z3-solver)
+./resharp-cuda/scripts/run_z3_proofs.sh
+```
+
+### Manual Commands
+
 ```bash
 # Build
-cd /path/to/resharp
 cargo build --release -p resharp-cuda
 
-# Run all tests (82/82)
+# Run all tests
 cargo test --release -p resharp-cuda
 
 # Run profiling benchmark

@@ -413,6 +413,8 @@ pub fn from_bytes(data: &[u8]) -> Result<Regex, Error> {
         has_bounded_prefix: false,
         has_rev_accel: sr.has_rev_accel,
         has_bounded: false,
+        has_look: false,
+        has_anchors: false,
     })
 }
 

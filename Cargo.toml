@@ -1,5 +1,5 @@
 [workspace]
-members = ["resharp-algebra", "resharp-parser", "resharp-engine", "resharp-ffi"]
+members = ["resharp-algebra", "resharp-parser", "resharp-engine", "resharp-ffi", "resharp-cuda"]
 resolver = "2"
 
 [profile.release]

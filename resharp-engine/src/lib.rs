@@ -133,6 +133,7 @@ impl From<resharp_algebra::AlgebraError> for Error {
 ///     .case_insensitive(true)   // global (?i)
 ///     .dot_matches_new_line(true); // . matches \n
 /// ```
+#[derive(Clone, Copy)]
 pub struct EngineOptions {
     /// states to eagerly precompile (0 = fully lazy).
     pub dfa_threshold: usize,
@@ -215,6 +216,8 @@ pub struct Regex {
     pub(crate) has_bounded_prefix: bool,
     pub(crate) has_rev_accel: bool,
     pub(crate) has_bounded: bool,
+    pub(crate) has_look: bool,
+    pub(crate) has_anchors: bool,
 }
 
 #[inline(never)]
@@ -384,6 +387,7 @@ impl Regex {
         let has_bounded = bounded.is_some();
         let has_bounded_prefix = bounded.as_ref().is_some_and(|bd| bd.prefix.is_some());
         let has_rev_accel = rev.prefix_skip.is_some() || rev.can_skip();
+        let has_anchors = b.contains_anchors(node);
 
         let hardened = if opts.hardened && !has_bounded
             && fixed_length.is_none() && max_cap >= 64
@@ -412,6 +416,8 @@ impl Regex {
             has_bounded_prefix,
             has_rev_accel,
             has_bounded,
+            has_look,
+            has_anchors,
         })
     }
 
@@ -1103,4 +1109,167 @@ impl Regex {
     pub fn from_bytes(data: &[u8]) -> Result<Regex, Error> {
         precompiled::from_bytes(data)
     }
+
+    /// Extract raw DFA tables for external use (e.g., GPU acceleration).
+    ///
+    /// Returns `None` if the DFA has uncompiled (lazy) states.
+    /// Call with a high `dfa_threshold` in `EngineOptions` to ensure full precompilation.
+    ///
+    /// The returned struct contains everything needed to run the DFA matching
+    /// algorithm: transition tables, minterms, effects, and metadata.
+    pub fn extract_dfa_tables(&self) -> Option<DfaTables> {
+        let inner = self.inner.lock().ok()?;
+        let fwd = &inner.fwd;
+        let rev = &inner.rev;
+
+        // Verify begin_tables cover all byte-minterms
+        if fwd.begin_table.len() < fwd.num_minterms as usize {
+            return None;
+        }
+        if rev.begin_table.len() < rev.num_minterms as usize {
+            return None;
+        }
+
+        let fwd_num_states = fwd.state_nodes.len();
+        let fwd_stride = 1usize << fwd.mt_log;
+        // verify forward DFA is fully precompiled
+        for sid in 2..fwd_num_states {
+            let base = sid * fwd_stride;
+            if base + fwd.num_minterms as usize > fwd.center_table.len() {
+                return None;
+            }
+            for mt in 0..fwd.num_minterms as usize {
+                if fwd.center_table[base + mt] == 0 {
+                    return None;
+                }
+            }
+        }
+
+        let rev_num_states = rev.state_nodes.len();
+        let rev_stride = 1usize << rev.mt_log;
+        // verify reverse DFA is fully precompiled
+        for sid in 2..rev_num_states {
+            let base = sid * rev_stride;
+            if base + rev.num_minterms as usize > rev.center_table.len() {
+                return None;
+            }
+            for mt in 0..rev.num_minterms as usize {
+                if rev.center_table[base + mt] == 0 {
+                    return None;
+                }
+            }
+        }
+        // verify begin_tables cover at least byte-minterms
+        let max_fwd_byte_mt = fwd.minterms_lookup.iter().copied().max().unwrap_or(0) as usize;
+        if fwd.begin_table.len() <= max_fwd_byte_mt { return None; }
+        let max_rev_byte_mt = rev.minterms_lookup.iter().copied().max().unwrap_or(0) as usize;
+        if rev.begin_table.len() <= max_rev_byte_mt { return None; }
+
+        let mut minterms_lookup = [0u8; 256];
+        minterms_lookup.copy_from_slice(&fwd.minterms_lookup);
+
+        // flatten effects
+        let (fwd_effects_flat, fwd_effects_offsets) = Self::flatten_effects(&fwd.effects);
+        let (rev_effects_flat, rev_effects_offsets) = Self::flatten_effects(&rev.effects);
+
+        Some(DfaTables {
+            minterms_lookup,
+            num_minterms: fwd.num_minterms,
+            mt_log: fwd.mt_log,
+            initial_fwd: fwd.initial,
+            initial_rev: rev.initial,
+            fwd_begin_table: fwd.begin_table.clone(),
+            fwd_center_table: fwd.center_table[..fwd_num_states * fwd_stride].to_vec(),
+            fwd_effects_id: fwd.effects_id[..fwd_num_states].to_vec(),
+            fwd_effects_flat,
+            fwd_effects_offsets,
+            rev_minterms_lookup: rev.minterms_lookup,
+            rev_num_minterms: rev.num_minterms,
+            rev_mt_log: rev.mt_log,
+            rev_begin_table: rev.begin_table.clone(),
+            rev_center_table: rev.center_table[..rev_num_states * rev_stride].to_vec(),
+            rev_effects_id: rev.effects_id[..rev_num_states].to_vec(),
+            rev_effects_flat,
+            rev_effects_offsets,
+            fwd_num_states,
+            rev_num_states,
+            empty_nullable: self.empty_nullable,
+            fixed_length: self.fixed_length,
+            has_look: self.has_look,
+            has_anchors: self.has_anchors,
+        })
+    }
+
+    fn flatten_effects(
+        effects: &[Vec<resharp_algebra::nulls::NullState>],
+    ) -> (Vec<u32>, Vec<u32>) {
+        let mut flat = Vec::new();
+        let mut offsets = Vec::with_capacity(effects.len() + 1);
+        for entry in effects {
+            offsets.push(flat.len() as u32);
+            for ns in entry {
+                let packed = ((ns.mask.0 as u32) << 16) | (ns.rel & 0xFFFF);
+                flat.push(packed);
+            }
+        }
+        offsets.push(flat.len() as u32);
+        (flat, offsets)
+    }
+}
+
+/// Raw DFA tables extracted from a compiled [`Regex`].
+///
+/// Contains precompiled forward and reverse DFA transition tables,
+/// minterm lookup, and effect annotations — everything needed to run
+/// the matching algorithm on external hardware (e.g., GPU).
+#[derive(Debug, Clone)]
+pub struct DfaTables {
+    /// Byte → minterm index mapping (256 entries).
+    pub minterms_lookup: [u8; 256],
+    /// Number of distinct minterms.
+    pub num_minterms: u32,
+    /// log2(num_minterms) rounded up for index arithmetic.
+    pub mt_log: u32,
+    /// Forward DFA initial state ID.
+    pub initial_fwd: u16,
+    /// Reverse DFA initial state ID.
+    pub initial_rev: u16,
+    /// Forward DFA begin-of-input transition table.
+    pub fwd_begin_table: Vec<u16>,
+    /// Forward DFA center transition table (state × minterm → state).
+    pub fwd_center_table: Vec<u16>,
+    /// Forward DFA per-state effect ID.
+    pub fwd_effects_id: Vec<u16>,
+    /// Forward DFA flattened effects: packed `(mask << 16) | rel`.
+    pub fwd_effects_flat: Vec<u32>,
+    /// Forward DFA offsets into effects_flat per effect ID.
+    pub fwd_effects_offsets: Vec<u32>,
+    /// Reverse DFA byte → minterm mapping (may differ from forward).
+    pub rev_minterms_lookup: [u8; 256],
+    /// Reverse DFA number of minterms.
+    pub rev_num_minterms: u32,
+    /// Reverse DFA log2 stride.
+    pub rev_mt_log: u32,
+    /// Reverse DFA begin-of-input transition table.
+    pub rev_begin_table: Vec<u16>,
+    /// Reverse DFA center transition table.
+    pub rev_center_table: Vec<u16>,
+    /// Reverse DFA per-state effect ID.
+    pub rev_effects_id: Vec<u16>,
+    /// Reverse DFA flattened effects.
+    pub rev_effects_flat: Vec<u32>,
+    /// Reverse DFA offsets into rev_effects_flat.
+    pub rev_effects_offsets: Vec<u32>,
+    /// Number of forward DFA states.
+    pub fwd_num_states: usize,
+    /// Number of reverse DFA states.
+    pub rev_num_states: usize,
+    /// Whether the empty string matches.
+    pub empty_nullable: bool,
+    /// Fixed match length (if the pattern always matches a fixed number of bytes).
+    pub fixed_length: Option<u32>,
+    /// Whether the pattern contains lookarounds (lookbehind/lookahead).
+    pub has_look: bool,
+    /// Whether the pattern contains anchors (^, $, \A, \Z).
+    pub has_anchors: bool,
 }

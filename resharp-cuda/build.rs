@@ -1,4 +1,4 @@
-// build.rs: compile CUDA kernels to PTX at build time using nvcc.
+// build.rs: compile CUDA kernels to CUBIN (native GPU binary) at build time using nvcc.
 
 use std::env;
 use std::path::PathBuf;

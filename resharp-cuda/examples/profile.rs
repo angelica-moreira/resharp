@@ -224,8 +224,9 @@ fn main() {
         }
     }
 
-    // Write CSV
-    let csv_path = "profile_results.csv";
+    // Write CSV next to the report
+    let csv_path = "resharp-cuda/results/profile_results.csv";
+    std::fs::create_dir_all("resharp-cuda/results").ok();
     let mut f = fs::File::create(csv_path).unwrap();
     writeln!(f, "label,pattern,input_kb,matches,oracle_us,cpu_ref_us,gpu_us,oracle_gbs,cpu_ref_gbs,gpu_gbs,correct").unwrap();
     for r in &all_rows {

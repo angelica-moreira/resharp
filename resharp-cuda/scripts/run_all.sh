@@ -153,7 +153,7 @@ header "Step 7: Full benchmark (profile.rs)"
 echo "  Running Oracle vs CPU-ref vs GPU across 1KB–10MB..."
 echo ""
 target/release/examples/profile
-ok "Benchmark completed → profile_results.csv"
+ok "Benchmark completed → resharp-cuda/results/profile_results.csv"
 
 # ─── 8. Summary ──────────────────────────────────────────────────
 header "Summary"

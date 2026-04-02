@@ -42,17 +42,18 @@ target/release/examples/profile
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Results saved to: profile_results.csv"
+echo "  Results saved to: resharp-cuda/results/profile_results.csv"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
 # Print CSV summary table
-if [ -f profile_results.csv ]; then
+CSV="resharp-cuda/results/profile_results.csv"
+if [ -f "$CSV" ]; then
     echo "CSV Summary (10MB results):"
     echo ""
     printf "  %-12s %-8s %-8s %-8s %-10s %-8s\n" "Pattern" "Oracle" "CPU-ref" "GPU" "GPU/CPUref" "Correct"
     printf "  %-12s %-8s %-8s %-8s %-10s %-8s\n" "───────" "──────" "──────" "──────" "────────" "──────"
-    grep ',10000,' profile_results.csv | while IFS=, read -r label pat kb matches oracle_us cpu_us gpu_us oracle_gbs cpu_gbs gpu_gbs correct; do
+    grep ',10000,' "$CSV" | while IFS=, read -r label pat kb matches oracle_us cpu_us gpu_us oracle_gbs cpu_gbs gpu_gbs correct; do
         if [ "$cpu_gbs" != "0" ] && [ "$cpu_gbs" != "0.0000" ]; then
             ratio=$(echo "scale=1; $gpu_gbs / $cpu_gbs" | bc 2>/dev/null || echo "?")
         else

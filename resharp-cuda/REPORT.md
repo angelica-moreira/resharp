@@ -66,7 +66,7 @@ The key insight: while individual DFA transitions are inherently sequential, we 
 
 ## 3. Algorithmic Background: RE# LLMatch
 
-The RE# paper (Moseley et al., POPL 2025) introduces a bidirectional DFA matching algorithm (Section 4.10):
+The RE# paper (Varatalu, POPL 2025) introduces a bidirectional DFA matching algorithm (Section 4.10):
 
 ```
 LLMatch(R, input):
@@ -189,7 +189,7 @@ Kernel 1 (chunk_map): Each thread computes f_k: S → S for its chunk
   ∀ s ∈ {0..S-1}: chunk_maps[k][s] = DFA state after processing chunk k starting from s
 
 Kernel 2 (chunk_propagate): Sequential composition (trivially fast: ~40K lookups)
-  chunk_initials[0] = initial_state
+  chunk_initials[0] = 0  (sentinel — chunk 0 uses begin_table for initialization)
   chunk_initials[k+1] = chunk_maps[k][chunk_initials[k]]
 
 Kernel 3 (chunk_resolve): Each thread walks its chunk from the propagated initial state
@@ -232,8 +232,8 @@ This eliminates 80MB of allocation (40MB host + 40MB device).
 
 | Optimization | Applied To | Benefit |
 |-------------|-----------|---------|
-| **Shared memory minterms** | All scan kernels | 256-byte cache eliminates repeated global reads |
-| **`__ldg()` intrinsic** | Transition tables, input, effects | Uses read-only texture cache path |
+| **Shared memory minterms** | `dfa_fwd_scan`, `dfa_fwd_scan_range`, `dfa_rev_chunk_map`, `dfa_rev_chunk_resolve` | 256-byte cache eliminates repeated global reads |
+| **`__ldg()` intrinsic** | `dfa_fwd_scan`, `dfa_fwd_scan_range`, `dfa_rev_chunk_map`, `dfa_rev_chunk_resolve` | Uses read-only texture cache path |
 | **Input buffer reuse** | rev_scan → fwd_scan | Single H2D upload shared across phases |
 | **CUDA stream** | All kernels | Implicit ordering, no explicit inter-kernel sync |
 | **CUBIN format** | Build time | Native binary avoids PTX version mismatch |
@@ -374,31 +374,31 @@ words,\w+,10000,2022716,69072,147836,2700941,0.1483,0.0693,0.0038,true
 
 | Input | Oracle | CPU-ref | GPU | GPU wins? |
 |-------|--------|---------|-----|-----------|
-| 1 KB | 0.034 | 0.176 | 0.004 | ✗ (overhead) |
-| 10 KB | 0.188 | 0.187 | 0.029 | ✗ |
-| 100 KB | 0.339 | 0.189 | 0.148 | ✗ (approaching) |
-| 1 MB | 0.378 | 0.185 | **0.222** | ✓ (1.2×) |
-| 10 MB | 0.371 | 0.178 | **0.230** | ✓ (1.3×) |
+| 1 KB | 0.042 | 0.170 | 0.004 | ✗ (overhead) |
+| 10 KB | 0.213 | 0.185 | 0.029 | ✗ |
+| 100 KB | 0.353 | 0.188 | 0.148 | ✗ (approaching) |
+| 1 MB | 0.379 | 0.184 | **0.221** | ✓ (1.2×) |
+| 10 MB | 0.371 | 0.177 | **0.232** | ✓ (1.3×) |
 
 **phone (`\d{3}-\d{4}`)** — best GPU pattern:
 
 | Input | Oracle | CPU-ref | GPU | GPU wins? |
 |-------|--------|---------|-----|-----------|
-| 1 KB | 1.916 | 0.183 | 0.003 | ✗ |
-| 10 KB | 2.075 | 0.188 | 0.024 | ✗ |
-| 100 KB | 2.177 | 0.191 | **0.191** | ≈ (breakeven) |
-| 1 MB | 2.184 | 0.193 | **0.599** | ✓ (3.1×) |
-| 10 MB | 2.154 | 0.192 | **0.779** | ✓ (4.1×) |
+| 1 KB | 1.891 | 0.186 | 0.003 | ✗ |
+| 10 KB | 2.160 | 0.197 | 0.024 | ✗ |
+| 100 KB | 2.213 | 0.196 | **0.191** | ≈ (breakeven) |
+| 1 MB | 2.182 | 0.197 | **0.598** | ✓ (3.0×) |
+| 10 MB | 2.156 | 0.198 | **0.797** | ✓ (4.0×) |
 
 **complement (`~(_*abc_*)`)** — nullable-slow path:
 
 | Input | Oracle | CPU-ref | GPU | GPU wins? |
 |-------|--------|---------|-----|-----------|
-| 1 KB | 0.129 | 0.347 | 0.020 | ✗ |
-| 10 KB | 0.725 | 0.383 | 0.162 | ✗ |
-| 100 KB | 1.350 | 0.387 | **0.659** | ✓ (1.7×) |
-| 1 MB | 1.454 | 0.385 | **0.813** | ✓ (2.1×) |
-| 10 MB | 1.478 | 0.388 | 0.266 | ✗ (regresses) |
+| 1 KB | 0.135 | 0.361 | 0.020 | ✗ |
+| 10 KB | 0.740 | 0.386 | 0.164 | ✗ |
+| 100 KB | 1.357 | 0.387 | **0.649** | ✓ (1.7×) |
+| 1 MB | 1.480 | 0.389 | **0.814** | ✓ (2.1×) |
+| 10 MB | 1.470 | 0.387 | 0.277 | ✗ (regresses) |
 
 > The complement pattern shows an interesting non-monotonic scaling: GPU peaks at 1MB (2.1× CPU-ref) but regresses at 10MB because the nullable-slow path launches 10M forward-scan threads, each walking O(average_match_length) bytes.
 
@@ -496,12 +496,12 @@ GPU kernel              ═══╝
 ```
 
 **38 GPU validation tests** cover:
-- Small inputs (1KB), large inputs (10MB)
+- Small inputs (single bytes, short strings), medium inputs (~100–200 KB via `.repeat()`)
 - Dense matches (`\w+` on text), sparse matches (`\d{3}-\d{4}`)
 - Edge cases: empty input, no matches, UTF-8 sequences
 - Complement patterns (nullable-slow path)
 - Alternation, intersection, character classes
-- Fallback patterns (anchors, lookarounds → CPU engine)
+- Fallback patterns (anchors, lookarounds → 2-way CPU engine check, not full 3-way GPU)
 
 ### 9.2 Z3 Formal Equivalence Proofs
 
@@ -545,7 +545,7 @@ The **CPU reference kernel** (`kernel.rs`) is a straightforward single-threaded 
 
 The **Oracle** (resharp engine) uses sophisticated optimizations that our GPU implementation doesn't replicate:
 - **Literal prefix skip-search**: For patterns like `\d{3}-\d{4}`, the engine extracts the literal prefix and uses Teddy/memchr vectorized search to skip huge regions of non-matching input
-- **SIMD byte classification**: Uses SSE2/AVX2 for fast minterm lookup
+- **SIMD byte classification**: Uses AVX2 (x86_64) and NEON (aarch64) for fast minterm lookup and byte search
 - **Lazy DFA caching**: Only materializes states on demand, with hot-path optimizations
 
 These CPU-specific optimizations are fundamentally different from GPU parallelism and would require separate GPU implementations (e.g., a GPU memchr kernel for literal prefix skipping).
@@ -587,7 +587,7 @@ At 1MB, the 1M threads fit better in the GPU's scheduling capacity (84 SMs × 20
 
 ### 10.5 GPU Memory Bandwidth Utilization
 
-The RTX A6000 has 768 GB/s theoretical memory bandwidth. Our best pattern (phone at 10MB) achieves 0.80 GB/s — only **0.1% of peak bandwidth**. Why?
+The RTX A6000 has 768 GB/s theoretical memory bandwidth. Our best pattern (phone at 10MB) achieves ~0.80 GB/s — a small fraction of peak bandwidth. Why?
 
 1. **Random access pattern**: DFA transitions are state-dependent → each thread reads different cache lines from the transition table
 2. **Low arithmetic intensity**: ~1 table lookup + 1 comparison per byte → memory-bound with poor cache reuse
